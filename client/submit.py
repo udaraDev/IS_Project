@@ -80,7 +80,7 @@ def submit_binary(binary_path: str, server: str, tamper: bool = False, forged_si
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Secure malware sample submission client")
     parser.add_argument("--binary", default=str(ROOT / "samples" / "sample_pe.bin"))
-    parser.add_argument("--server", default="https://localhost:5000")
+    parser.add_argument("--server", default="https://localhost:5443")
     parser.add_argument("--tamper", action="store_true")
     parser.add_argument("--forged-signature", action="store_true")
     args = parser.parse_args()

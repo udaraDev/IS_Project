@@ -19,7 +19,18 @@ LOGS = ROOT / "logs"
 LOGS.mkdir(exist_ok=True)
 
 app = Flask(__name__)
-SESSIONS: dict[str, bytes] = {}
+
+# Session storage with timestamps for TTL-based cleanup
+SESSION_TTL = 300  # 5 minutes
+SESSIONS: dict[str, dict] = {}  # session_id -> {"key": bytes, "created": float}
+
+
+def _cleanup_expired_sessions():
+    """Remove sessions older than SESSION_TTL (Zero Trust: no persistent trust)."""
+    now = time.time()
+    expired = [sid for sid, s in SESSIONS.items() if now - s["created"] > SESSION_TTL]
+    for sid in expired:
+        del SESSIONS[sid]
 
 
 @app.route("/health", methods=["GET"])
@@ -43,7 +54,8 @@ def init_key_exchange():
     aes_key = derive_hybrid_aes_key(ecdh_shared, kyber_shared)
 
     session_id = str(uuid.uuid4())
-    SESSIONS[session_id] = aes_key
+    _cleanup_expired_sessions()
+    SESSIONS[session_id] = {"key": aes_key, "created": time.time()}
     return jsonify({
         "session_id": session_id,
         "server_ecdh_pub": b64e(server_ecdh_pub),
@@ -58,10 +70,22 @@ def submit():
     session_id = body.get("session_id")
     if session_id not in SESSIONS:
         return jsonify({"status": "error", "reason": "unknown or expired session"}), 400
-    aes_key = SESSIONS.pop(session_id)
+
+    session = SESSIONS.pop(session_id)
+
+    # Check session TTL (Zero Trust: time-limited trust)
+    if time.time() - session["created"] > SESSION_TTL:
+        return jsonify({"status": "error", "reason": "session expired"}), 400
+
+    aes_key = session["key"]
 
     metadata = body["metadata"]
     metadata_bytes = canonical_json(metadata)
+
+    # NOTE: In production, the client certificate should be extracted from the
+    # TLS handshake via request.environ['SSL_CLIENT_CERT'] (requires a proper
+    # WSGI server like Gunicorn with SSL). For this demo, Flask's built-in
+    # server doesn't expose client certs, so we read from disk.
     with open(CERTS / "client.crt", "rb") as f:
         client_cert_pem = f.read()
 
@@ -101,6 +125,12 @@ def create_ssl_context():
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Secure mTLS server")
+    parser.add_argument("--port", type=int, default=5443, help="Port to listen on (default: 5443)")
+    args = parser.parse_args()
+
     if not (CERTS / "server.crt").exists():
-        raise SystemExit("Run: bash certs/generate_certs.sh first")
-    app.run(host="127.0.0.1", port=5000, ssl_context=create_ssl_context(), debug=False)
+        raise SystemExit("Run: python certs/generate_certs.py first")
+    print(f"Starting mTLS server on https://127.0.0.1:{args.port}")
+    app.run(host="127.0.0.1", port=args.port, ssl_context=create_ssl_context(), debug=False)
